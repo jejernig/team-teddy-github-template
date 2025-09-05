@@ -1,0 +1,302 @@
+name: 🏗️ Gatekeeper - Structure Validation
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  validate-structure:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install Dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          fi
+
+      - name: Validate Repository Structure
+        id: structure-check
+        run: |
+          echo "🏗️ Validating repository structure..."
+          
+          # Create validation script inline for AI-resistant validation
+          cat > validate_structure.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          VALIDATION_PASSED=true
+          ISSUES=()
+          
+          # Define required directories based on project type
+          REQUIRED_DIRS=(
+            "src"
+            "tests"
+            "docs"
+            ".github/workflows"
+          )
+          
+          # Check for required directories
+          echo "Checking required directories..."
+          for dir in "${REQUIRED_DIRS[@]}"; do
+            if [ ! -d "$dir" ]; then
+              ISSUES+=("❌ Required directory missing: $dir")
+              VALIDATION_PASSED=false
+            else
+              echo "✅ Found: $dir"
+            fi
+          done
+          
+          # AI Hallucination Detection: Empty directories
+          echo "Scanning for empty directories (AI hallucination detection)..."
+          EMPTY_DIRS=$(find . -type d -empty -not -path "./.git/*" -not -path "./node_modules/*" -not -path "./.next/*" -not -path "./dist/*" -not -path "./build/*" 2>/dev/null | head -20)
+          if [ ! -z "$EMPTY_DIRS" ]; then
+            echo "$EMPTY_DIRS" | while read -r dir; do
+              if [ ! -z "$dir" ]; then
+                ISSUES+=("⚠️  Empty directory detected (possible AI hallucination): $dir")
+                VALIDATION_PASSED=false
+              fi
+            done
+          fi
+          
+          # File placement validation
+          echo "Validating file placement..."
+          
+          # Backend files should not be in frontend
+          if find src/frontend/ -name "*controller*" -o -name "*service.js" -o -name "*api.js" 2>/dev/null | grep -q .; then
+            ISSUES+=("❌ Backend-style files found in frontend directory")
+            VALIDATION_PASSED=false
+          fi
+          
+          # Frontend files should not be in backend
+          if find src/backend/ -name "*.component.*" -o -name "*.jsx" -o -name "*.vue" 2>/dev/null | grep -q .; then
+            ISSUES+=("❌ Frontend component files found in backend directory")
+            VALIDATION_PASSED=false
+          fi
+          
+          # Test structure should mirror src structure
+          echo "Validating test structure mirrors src structure..."
+          if [ -d "src" ] && [ -d "tests" ]; then
+            for src_dir in $(find src/ -type d -mindepth 1 | head -10); do
+              relative_path=${src_dir#src/}
+              expected_test_dir="tests/unit/$relative_path"
+              if [ ! -d "$expected_test_dir" ]; then
+                ISSUES+=("⚠️  Test directory missing for $src_dir: $expected_test_dir")
+                # Auto-create missing test directories
+                mkdir -p "$expected_test_dir"
+                echo "# Tests for $src_dir" > "$expected_test_dir/README.md"
+                echo "📁 Auto-created missing test directory: $expected_test_dir"
+              fi
+            done
+          fi
+          
+          # Naming convention validation
+          echo "Validating naming conventions..."
+          
+          # Check for mixed naming patterns (common AI mistake)
+          JS_SNAKE_CASE=$(find src/ -name "*.js" -exec basename {} \; 2>/dev/null | grep -E "^[a-z]+(_[a-z]+)+\.js$" | wc -l)
+          JS_CAMEL_CASE=$(find src/ -name "*.js" -exec basename {} \; 2>/dev/null | grep -E "^[a-z]+([A-Z][a-z]+)*\.js$" | wc -l)
+          
+          if [ "$JS_SNAKE_CASE" -gt 0 ] && [ "$JS_CAMEL_CASE" -gt 0 ]; then
+            ISSUES+=("❌ Inconsistent JavaScript naming: Mix of camelCase and snake_case detected")
+            VALIDATION_PASSED=false
+          fi
+          
+          # Generate structure report
+          echo "Generating structure report..."
+          if command -v tree >/dev/null 2>&1; then
+            tree -a -I 'node_modules|.git|.next|dist|build' > structure-report.txt 2>/dev/null || echo "Tree command failed" > structure-report.txt
+          else
+            find . -not -path "./node_modules/*" -not -path "./.git/*" -not -path "./.next/*" -not -path "./dist/*" -not -path "./build/*" | head -100 > structure-report.txt
+          fi
+          
+          # Output results
+          if [ "$VALIDATION_PASSED" = true ]; then
+            echo "✅ Structure validation passed!"
+            echo "validation_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Structure validation failed!"
+            echo "Issues found:"
+            printf '%s\n' "${ISSUES[@]}"
+            echo "validation_status=failure" >> $GITHUB_OUTPUT
+            echo "validation_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          EOF
+          
+          chmod +x validate_structure.sh
+          ./validate_structure.sh
+
+      - name: AI Code Completeness Check
+        id: completeness-check
+        run: |
+          echo "🤖 Checking for AI-generated incomplete code..."
+          
+          INCOMPLETE_ISSUES=()
+          COMPLETENESS_PASSED=true
+          
+          # Check for placeholder implementations
+          if find src/ -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" 2>/dev/null | xargs grep -l "throw new Error.*not implemented\|NotImplementedException\|TODO.*implement" 2>/dev/null; then
+            INCOMPLETE_ISSUES+=("❌ Incomplete function implementations found")
+            COMPLETENESS_PASSED=false
+          fi
+          
+          # Check for placeholder content
+          if find src/ docs/ -name "*.js" -o -name "*.ts" -o -name "*.md" 2>/dev/null | xargs grep -l "Lorem ipsum\|PLACEHOLDER\|TODO: Replace" 2>/dev/null; then
+            INCOMPLETE_ISSUES+=("❌ Placeholder content found")
+            COMPLETENESS_PASSED=false
+          fi
+          
+          # Check for broken imports
+          if find src/ -name "*.js" -o -name "*.ts" 2>/dev/null | xargs grep -l "import.*from.*undefined\|import.*from.*''\|import.*from.*\"\"\|export.*undefined" 2>/dev/null; then
+            INCOMPLETE_ISSUES+=("❌ Broken import/export statements found")
+            COMPLETENESS_PASSED=false
+          fi
+          
+          # Check for common AI hallucination patterns
+          if find . -name "*.json" 2>/dev/null | xargs grep -l "\".*\": \"PLACEHOLDER\"\|\".*\": \"TODO\"" 2>/dev/null; then
+            INCOMPLETE_ISSUES+=("❌ Placeholder values in JSON configuration files")
+            COMPLETENESS_PASSED=false
+          fi
+          
+          if [ "$COMPLETENESS_PASSED" = true ]; then
+            echo "✅ Code completeness validation passed!"
+            echo "completeness_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Code completeness validation failed!"
+            printf '%s\n' "${INCOMPLETE_ISSUES[@]}"
+            echo "completeness_status=failure" >> $GITHUB_OUTPUT
+            echo "completeness_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${INCOMPLETE_ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Generate Structure Report
+        if: always()
+        run: |
+          echo "📊 Generating comprehensive structure report..."
+          
+          cat > structure-analysis.md << EOF
+          # Repository Structure Analysis Report
+          
+          **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Commit:** ${{ github.sha }}
+          **Branch:** ${{ github.ref_name }}
+          
+          ## Structure Validation Results
+          
+          - **Status:** ${{ steps.structure-check.outputs.validation_status }}
+          - **Code Completeness:** ${{ steps.completeness-check.outputs.completeness_status }}
+          
+          ## Repository Structure
+          
+          \`\`\`
+          $(cat structure-report.txt 2>/dev/null || echo "Structure report not available")
+          \`\`\`
+          
+          ## Directory Statistics
+          
+          - **Total Directories:** $(find . -type d -not -path "./.git/*" -not -path "./node_modules/*" | wc -l)
+          - **Total Files:** $(find . -type f -not -path "./.git/*" -not -path "./node_modules/*" | wc -l)
+          - **Source Files:** $(find src/ -type f 2>/dev/null | wc -l)
+          - **Test Files:** $(find tests/ -type f 2>/dev/null | wc -l)
+          - **Documentation Files:** $(find docs/ -name "*.md" 2>/dev/null | wc -l)
+          
+          ## Validation Issues
+          
+          $(if [ "${{ steps.structure-check.outputs.validation_status }}" = "failure" ]; then
+            echo "${{ steps.structure-check.outputs.validation_issues }}"
+          else
+            echo "No structure issues found ✅"
+          fi)
+          
+          $(if [ "${{ steps.completeness-check.outputs.completeness_status }}" = "failure" ]; then
+            echo "${{ steps.completeness-check.outputs.completeness_issues }}"
+          else
+            echo "No completeness issues found ✅"
+          fi)
+          
+          ## Recommendations
+          
+          - Ensure all source directories have corresponding test directories
+          - Use consistent naming conventions throughout the project
+          - Complete all placeholder implementations before merging
+          - Maintain clear separation between frontend and backend code
+          
+          ---
+          
+          *This report was automatically generated by the GitHub Gatekeeper System*
+          EOF
+
+      - name: Upload Structure Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structure-analysis-report
+          path: |
+            structure-analysis.md
+            structure-report.txt
+          retention-days: 30
+
+      - name: Comment on PR with Results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const report = fs.readFileSync('structure-analysis.md', 'utf8');
+              const structureStatus = '${{ steps.structure-check.outputs.validation_status }}';
+              const completenessStatus = '${{ steps.completeness-check.outputs.completeness_status }}';
+              
+              const overallStatus = (structureStatus === 'success' && completenessStatus === 'success') ? '✅' : '❌';
+              
+              const comment = `## ${overallStatus} Structure Validation Report
+              
+              **Structure Validation:** ${structureStatus === 'success' ? '✅ Passed' : '❌ Failed'}
+              **Code Completeness:** ${completenessStatus === 'success' ? '✅ Passed' : '❌ Failed'}
+              
+              <details>
+              <summary>📊 Detailed Analysis Report</summary>
+              
+              ${report}
+              </details>
+              
+              ${overallStatus === '❌' ? '⚠️ **Action Required:** Please fix the validation issues before merging.' : ''}
+              `;
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.error('Error posting comment:', error);
+            }
+
+      - name: Fail if validation failed
+        if: steps.structure-check.outputs.validation_status == 'failure' || steps.completeness-check.outputs.completeness_status == 'failure'
+        run: |
+          echo "❌ Structure validation failed - blocking merge"
+          exit 1

@@ -1,0 +1,491 @@
+name: 🏆 {{PROJECT_NAME}} - Comprehensive Quality Control
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  comprehensive-testing:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install Dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          fi
+
+      - name: Security Dependency Scan
+        id: security-scan
+        run: |
+          echo "🔒 Running security dependency scan..."
+          
+          SECURITY_PASSED=true
+          SECURITY_ISSUES=()
+          
+          if [ -f package.json ]; then
+            # Run npm audit
+            if ! npm audit --audit-level=moderate --production 2>&1; then
+              SECURITY_ISSUES+=("npm audit found security vulnerabilities")
+              SECURITY_PASSED=false
+            fi
+            
+            # Check for known vulnerable packages
+            VULNERABLE_PACKAGES=$(npm ls --depth=0 --parseable 2>/dev/null | xargs npm audit --json 2>/dev/null | jq -r '.vulnerabilities | keys[]' 2>/dev/null | head -5)
+            
+            if [ ! -z "$VULNERABLE_PACKAGES" ]; then
+              echo "⚠️  Vulnerable packages detected:"
+              echo "$VULNERABLE_PACKAGES"
+              SECURITY_ISSUES+=("Vulnerable packages: $(echo "$VULNERABLE_PACKAGES" | tr '\n' ', ')")
+            fi
+          fi
+          
+          # Check for hardcoded secrets/credentials
+          echo "Scanning for hardcoded credentials..."
+          CREDENTIAL_PATTERNS=(
+            "password\s*=\s*[\"'][^\"']+[\"']"
+            "api_key\s*=\s*[\"'][^\"']+[\"']"
+            "secret\s*=\s*[\"'][^\"']+[\"']"
+            "token\s*=\s*[\"'][^\"']+[\"']"
+            "AKIA[0-9A-Z]{16}"
+            "sk_live_[0-9a-zA-Z]{24}"
+          )
+          
+          for pattern in "${CREDENTIAL_PATTERNS[@]}"; do
+            if find . -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.env*" 2>/dev/null | \
+               xargs grep -i -E "$pattern" 2>/dev/null | grep -v node_modules | head -1; then
+              SECURITY_ISSUES+=("Potential hardcoded credentials detected")
+              SECURITY_PASSED=false
+              break
+            fi
+          done
+          
+          # Output results
+          if [ "$SECURITY_PASSED" = true ]; then
+            echo "✅ Security scan passed!"
+            echo "security_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Security issues detected!"
+            printf '%s\n' "${SECURITY_ISSUES[@]}"
+            echo "security_status=failure" >> $GITHUB_OUTPUT
+            echo "security_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${SECURITY_ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Unit Tests with Coverage
+        id: unit-tests
+        run: |
+          echo "🧪 Running unit tests with coverage..."
+          
+          TESTS_PASSED=true
+          TEST_ISSUES=()
+          
+          if [ -f package.json ]; then
+            # Check if test script exists
+            if npm run test --if-present 2>&1; then
+              echo "✅ Unit tests passed"
+            else
+              TEST_ISSUES+=("Unit tests failed or not configured")
+              TESTS_PASSED=false
+            fi
+            
+            # Run coverage if available
+            if npm run test:coverage --if-present 2>&1; then
+              echo "✅ Coverage report generated"
+              
+              # Parse coverage results if available
+              if [ -f coverage/coverage-summary.json ]; then
+                COVERAGE=$(cat coverage/coverage-summary.json | jq -r '.total.lines.pct' 2>/dev/null || echo "0")
+                echo "Code coverage: ${COVERAGE}%"
+                
+                if [ "${COVERAGE%.*}" -lt 70 ]; then
+                  TEST_ISSUES+=("Code coverage below threshold: ${COVERAGE}% (minimum: 70%)")
+                  TESTS_PASSED=false
+                fi
+              fi
+            else
+              echo "⚠️  No coverage configuration found"
+            fi
+          else
+            echo "⚠️  No package.json found, skipping tests"
+          fi
+          
+          # Check for test files existence
+          TEST_FILES=$(find . -name "*.test.js" -o -name "*.test.ts" -o -name "*.spec.js" -o -name "*.spec.ts" 2>/dev/null | head -5)
+          if [ -z "$TEST_FILES" ] && [ -d "src" ]; then
+            TEST_ISSUES+=("No test files found despite having src directory")
+            TESTS_PASSED=false
+          fi
+          
+          # Output results
+          if [ "$TESTS_PASSED" = true ]; then
+            echo "✅ Testing validation passed!"
+            echo "tests_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Testing issues detected!"
+            printf '%s\n' "${TEST_ISSUES[@]}"
+            echo "tests_status=failure" >> $GITHUB_OUTPUT
+            echo "test_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${TEST_ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Accessibility Validation
+        id: accessibility-check
+        run: |
+          echo "♿ Running accessibility validation..."
+          
+          A11Y_PASSED=true
+          A11Y_ISSUES=()
+          
+          # Install axe-core CLI if not present
+          if ! command -v axe >/dev/null 2>&1; then
+            npm install -g @axe-core/cli 2>/dev/null || true
+          fi
+          
+          # Check for accessibility-related packages
+          if [ -f package.json ]; then
+            A11Y_PACKAGES=$(grep -E "axe|accessibility|a11y" package.json | wc -l)
+            if [ "$A11Y_PACKAGES" -eq 0 ]; then
+              A11Y_ISSUES+=("No accessibility testing packages found in dependencies")
+              A11Y_PASSED=false
+            fi
+          fi
+          
+          # Check for ARIA attributes in HTML/JSX files
+          if find . -name "*.html" -o -name "*.jsx" -o -name "*.tsx" 2>/dev/null | xargs grep -l "aria-" 2>/dev/null >/dev/null; then
+            echo "✅ ARIA attributes found in components"
+          else
+            if find . -name "*.jsx" -o -name "*.tsx" 2>/dev/null | head -1 | grep -q .; then
+              A11Y_ISSUES+=("No ARIA attributes found in React/JSX components")
+              A11Y_PASSED=false
+            fi
+          fi
+          
+          # Check for alt attributes in images
+          IMG_WITHOUT_ALT=$(find . -name "*.jsx" -o -name "*.tsx" -o -name "*.html" 2>/dev/null | \
+            xargs grep -E '<img[^>]*>' 2>/dev/null | grep -v 'alt=' | head -3)
+          
+          if [ ! -z "$IMG_WITHOUT_ALT" ]; then
+            A11Y_ISSUES+=("Images without alt attributes found")
+            A11Y_PASSED=false
+          fi
+          
+          # Output results
+          if [ "$A11Y_PASSED" = true ]; then
+            echo "✅ Accessibility validation passed!"
+            echo "accessibility_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  Accessibility issues detected"
+            printf '%s\n' "${A11Y_ISSUES[@]}"
+            echo "accessibility_status=warning" >> $GITHUB_OUTPUT
+            echo "accessibility_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${A11Y_ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Performance Analysis
+        id: performance-check
+        run: |
+          echo "⚡ Analyzing performance considerations..."
+          
+          PERF_PASSED=true
+          PERF_ISSUES=()
+          
+          # Bundle size analysis
+          if [ -f package.json ]; then
+            LARGE_DEPENDENCIES=$(npm ls --depth=0 --json 2>/dev/null | \
+              jq -r '.dependencies | to_entries[] | select(.value.resolved) | .key' 2>/dev/null | \
+              head -10)
+            
+            # Check for performance-heavy packages
+            HEAVY_PACKAGES=("lodash" "moment" "jquery" "bootstrap")
+            for pkg in "${HEAVY_PACKAGES[@]}"; do
+              if echo "$LARGE_DEPENDENCIES" | grep -q "$pkg"; then
+                PERF_ISSUES+=("Heavy dependency detected: $pkg (consider lighter alternatives)")
+              fi
+            done
+          fi
+          
+          # Check for console.log statements in source (performance impact)
+          CONSOLE_STATEMENTS=$(find src/ -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" 2>/dev/null | \
+            xargs grep -n "console\." 2>/dev/null | wc -l)
+          
+          if [ "$CONSOLE_STATEMENTS" -gt 10 ]; then
+            PERF_ISSUES+=("High number of console statements ($CONSOLE_STATEMENTS) - consider removing for production")
+          fi
+          
+          # Check for large files that might impact bundle size
+          LARGE_SOURCE_FILES=$(find src/ -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" 2>/dev/null | \
+            xargs wc -c 2>/dev/null | awk '$1 > 50000 {print $2 " (" int($1/1024) "KB)"}' | head -3)
+          
+          if [ ! -z "$LARGE_SOURCE_FILES" ]; then
+            PERF_ISSUES+=("Large source files detected: $(echo "$LARGE_SOURCE_FILES" | tr '\n' ', ')")
+          fi
+          
+          # Output results
+          if [ ${#PERF_ISSUES[@]} -eq 0 ]; then
+            echo "✅ Performance analysis passed!"
+            echo "performance_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  Performance concerns detected"
+            printf '%s\n' "${PERF_ISSUES[@]}"
+            echo "performance_status=warning" >> $GITHUB_OUTPUT
+            echo "performance_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${PERF_ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Documentation Quality Check
+        id: docs-check
+        run: |
+          echo "📚 Analyzing documentation quality..."
+          
+          DOCS_PASSED=true
+          DOCS_ISSUES=()
+          
+          # Check for README.md
+          if [ ! -f README.md ]; then
+            DOCS_ISSUES+=("Missing root README.md file")
+            DOCS_PASSED=false
+          else
+            # Check README content quality
+            README_SIZE=$(wc -w README.md | awk '{print $1}')
+            if [ "$README_SIZE" -lt 50 ]; then
+              DOCS_ISSUES+=("README.md is too brief (${README_SIZE} words) - consider expanding")
+              DOCS_PASSED=false
+            fi
+            
+            # Check for essential sections
+            REQUIRED_SECTIONS=("Installation" "Usage" "Contributing" "License")
+            for section in "${REQUIRED_SECTIONS[@]}"; do
+              if ! grep -qi "$section" README.md; then
+                DOCS_ISSUES+=("README.md missing $section section")
+                DOCS_PASSED=false
+              fi
+            done
+          fi
+          
+          # Check for API documentation
+          if [ -d "src/backend" ] || [ -d "src/api" ]; then
+            if [ ! -d "docs/api" ] && [ ! -f "docs/API.md" ] && [ ! -f "API.md" ]; then
+              DOCS_ISSUES+=("Missing API documentation for backend project")
+              DOCS_PASSED=false
+            fi
+          fi
+          
+          # Check for inline code documentation
+          if [ -d "src" ]; then
+            TOTAL_FUNCTIONS=$(find src/ -name "*.js" -o -name "*.ts" 2>/dev/null | xargs grep -E "function\s+\w+|const\s+\w+\s*=" 2>/dev/null | wc -l)
+            DOCUMENTED_FUNCTIONS=$(find src/ -name "*.js" -o -name "*.ts" 2>/dev/null | xargs grep -B1 -E "function\s+\w+|const\s+\w+\s*=" 2>/dev/null | grep -E "//|/\*|\*" | wc -l)
+            
+            if [ "$TOTAL_FUNCTIONS" -gt 0 ]; then
+              DOC_RATIO=$((DOCUMENTED_FUNCTIONS * 100 / TOTAL_FUNCTIONS))
+              if [ "$DOC_RATIO" -lt 30 ]; then
+                DOCS_ISSUES+=("Low inline documentation ratio (${DOC_RATIO}%) - consider adding function comments")
+                DOCS_PASSED=false
+              fi
+            fi
+          fi
+          
+          # Output results
+          if [ "$DOCS_PASSED" = true ]; then
+            echo "✅ Documentation quality check passed!"
+            echo "docs_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  Documentation issues detected"
+            printf '%s\n' "${DOCS_ISSUES[@]}"
+            echo "docs_status=warning" >> $GITHUB_OUTPUT
+            echo "docs_issues<<EOF" >> $GITHUB_OUTPUT
+            printf '%s\n' "${DOCS_ISSUES[@]}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Comprehensive Quality Report
+        if: always()
+        run: |
+          echo "📊 Generating comprehensive quality report..."
+          
+          cat > comprehensive-quality-report.md << EOF
+          # {{PROJECT_NAME}} - Comprehensive Quality Control Report
+          
+          **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Project:** {{PROJECT_NAME}}
+          **Company:** {{COMPANY_NAME}}
+          **Commit:** ${{ github.sha }}
+          **Branch:** ${{ github.ref_name }}
+          
+          ## Quality Gate Results
+          
+          | Gate | Status | Issues |
+          |------|--------|---------|
+          | 🔒 Security | ${{ steps.security-scan.outputs.security_status }} | $(if [ "${{ steps.security-scan.outputs.security_status }}" = "failure" ]; then echo "❌"; else echo "✅"; fi) |
+          | 🧪 Testing | ${{ steps.unit-tests.outputs.tests_status }} | $(if [ "${{ steps.unit-tests.outputs.tests_status }}" = "failure" ]; then echo "❌"; else echo "✅"; fi) |
+          | ♿ Accessibility | ${{ steps.accessibility-check.outputs.accessibility_status }} | $(if [ "${{ steps.accessibility-check.outputs.accessibility_status }}" = "warning" ]; then echo "⚠️"; else echo "✅"; fi) |
+          | ⚡ Performance | ${{ steps.performance-check.outputs.performance_status }} | $(if [ "${{ steps.performance-check.outputs.performance_status }}" = "warning" ]; then echo "⚠️"; else echo "✅"; fi) |
+          | 📚 Documentation | ${{ steps.docs-check.outputs.docs_status }} | $(if [ "${{ steps.docs-check.outputs.docs_status }}" = "warning" ]; then echo "⚠️"; else echo "✅"; fi) |
+          
+          ## Critical Issues (Must Fix)
+          
+          $(if [ "${{ steps.security-scan.outputs.security_status }}" = "failure" ]; then
+            echo "### 🔒 Security Issues"
+            echo "${{ steps.security-scan.outputs.security_issues }}"
+            echo ""
+          fi)
+          
+          $(if [ "${{ steps.unit-tests.outputs.tests_status }}" = "failure" ]; then
+            echo "### 🧪 Testing Issues"
+            echo "${{ steps.unit-tests.outputs.test_issues }}"
+            echo ""
+          fi)
+          
+          ## Advisory Issues (Recommend Fix)
+          
+          $(if [ "${{ steps.accessibility-check.outputs.accessibility_status }}" = "warning" ]; then
+            echo "### ♿ Accessibility Issues"
+            echo "${{ steps.accessibility-check.outputs.accessibility_issues }}"
+            echo ""
+          fi)
+          
+          $(if [ "${{ steps.performance-check.outputs.performance_status }}" = "warning" ]; then
+            echo "### ⚡ Performance Issues"
+            echo "${{ steps.performance-check.outputs.performance_issues }}"
+            echo ""
+          fi)
+          
+          $(if [ "${{ steps.docs-check.outputs.docs_status }}" = "warning" ]; then
+            echo "### 📚 Documentation Issues"
+            echo "${{ steps.docs-check.outputs.docs_issues }}"
+            echo ""
+          fi)
+          
+          ## Recommendations
+          
+          ### Security Best Practices
+          - Run regular dependency audits (\`npm audit\`)
+          - Use environment variables for secrets
+          - Implement proper authentication and authorization
+          - Regular security scans and penetration testing
+          
+          ### Testing Excellence  
+          - Maintain minimum 70% code coverage
+          - Implement unit, integration, and E2E tests
+          - Use proper testing frameworks and mocking
+          - Automate testing in CI/CD pipeline
+          
+          ### Accessibility Standards
+          - Follow WCAG 2.2 Level AA guidelines
+          - Use semantic HTML elements
+          - Provide alt text for images
+          - Ensure proper color contrast ratios
+          
+          ### Performance Optimization
+          - Monitor bundle sizes
+          - Remove unused dependencies
+          - Implement code splitting
+          - Optimize images and assets
+          
+          ### Documentation Excellence
+          - Comprehensive README with setup instructions
+          - API documentation for backend services
+          - Inline code comments for complex logic
+          - Architecture and design documentation
+          
+          ---
+          
+          *This report was automatically generated by the GitHub Gatekeeper Comprehensive Quality Control System*
+          EOF
+
+      - name: Upload Quality Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comprehensive-quality-report
+          path: comprehensive-quality-report.md
+          retention-days: 30
+
+      - name: Comment on PR with Comprehensive Results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const report = fs.readFileSync('comprehensive-quality-report.md', 'utf8');
+              const securityStatus = '${{ steps.security-scan.outputs.security_status }}';
+              const testsStatus = '${{ steps.unit-tests.outputs.tests_status }}';
+              const accessibilityStatus = '${{ steps.accessibility-check.outputs.accessibility_status }}';
+              const performanceStatus = '${{ steps.performance-check.outputs.performance_status }}';
+              const docsStatus = '${{ steps.docs-check.outputs.docs_status }}';
+              
+              const criticalIssues = securityStatus === 'failure' || testsStatus === 'failure';
+              const warnings = accessibilityStatus === 'warning' || performanceStatus === 'warning' || docsStatus === 'warning';
+              
+              const overallStatus = criticalIssues ? '❌' : warnings ? '⚠️' : '✅';
+              const statusText = criticalIssues ? 'Failed' : warnings ? 'Passed with Warnings' : 'Passed';
+              
+              const comment = `## ${overallStatus} Comprehensive Quality Control Report
+              
+              **Overall Status:** ${statusText}
+              
+              | Quality Gate | Status |
+              |--------------|---------|
+              | 🔒 Security | ${securityStatus === 'success' ? '✅ Passed' : '❌ Failed'} |
+              | 🧪 Testing | ${testsStatus === 'success' ? '✅ Passed' : '❌ Failed'} |
+              | ♿ Accessibility | ${accessibilityStatus === 'success' ? '✅ Passed' : '⚠️ Warnings'} |
+              | ⚡ Performance | ${performanceStatus === 'success' ? '✅ Passed' : '⚠️ Warnings'} |
+              | 📚 Documentation | ${docsStatus === 'success' ? '✅ Passed' : '⚠️ Warnings'} |
+              
+              <details>
+              <summary>📊 Detailed Quality Report</summary>
+              
+              ${report}
+              </details>
+              
+              ${criticalIssues ? '🚨 **Action Required:** Critical issues must be resolved before merging.' : ''}
+              ${warnings && !criticalIssues ? '⚠️ **Recommendations:** Consider addressing warnings for better code quality.' : ''}
+              ${!criticalIssues && !warnings ? '🎉 **Excellent Work:** All quality gates passed!' : ''}
+              `;
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.error('Error posting comprehensive quality comment:', error);
+            }
+
+      - name: Fail if critical issues detected
+        if: steps.security-scan.outputs.security_status == 'failure' || steps.unit-tests.outputs.tests_status == 'failure'
+        run: |
+          echo "❌ Critical quality issues detected - blocking merge"
+          exit 1
