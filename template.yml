@@ -1,0 +1,79 @@
+# Team Teddy Development GitHub Templates Repository Configuration
+# Template for enterprise-grade GitHub Actions workflows and quality gates with Supabase integration
+
+name: "Team Teddy Development Templates"
+description: "Production-ready GitHub Actions workflows, quality gates, automation, and Supabase integration for enterprise projects"
+version: "2.1.0"
+author: "Team Teddy Development"
+license: "MIT"
+homepage: "https://teamteddy.net/"
+repository: "https://github.com/jejernig/team-teddy-github-template"
+
+# Template metadata for GitHub
+template:
+  name: "enterprise-web-app"
+  category: "web-application"
+  tags:
+    - "supabase"
+    - "typescript" 
+    - "react"
+    - "nextjs"
+    - "enterprise"
+    - "quality-gates"
+    - "ci-cd"
+    - "automation"
+    - "security"
+    - "accessibility"
+
+# Default GitHub organization (can be overridden)
+github:
+  default_org: "jejernig"
+  template_repository: "team-teddy-github-template"
+  default_company: "Team Teddy Development"
+  default_domain: "https://teamteddy.net/"
+  
+# Template categories available
+categories:
+  - "web-application"
+  - "api-service" 
+  - "microservice"
+  - "infrastructure"
+  - "data-pipeline"
+  - "mobile-app"
+  - "supabase-fullstack"
+  - "nextjs-supabase"
+  - "react-supabase"
+
+# Required variables that must be provided
+required_variables:
+  # Company/Organization Information
+  - COMPANY_NAME
+  - COMPANY_EMAIL
+  - COMPANY_DOMAIN
+  - GITHUB_ORG
+  - PROJECT_NAME
+  - PROJECT_DESCRIPTION
+  
+  # Database Configuration (Supabase default)
+  - SUPABASE_PROJECT_ID
+  - SUPABASE_ANON_KEY
+  - SUPABASE_ACCESS_TOKEN
+
+# Default values for variables
+default_values:
+  COMPANY_NAME: "Team Teddy Development"
+  COMPANY_EMAIL: "eric@teamteddy.net"
+  COMPANY_DOMAIN: "teamteddy.net"
+  GITHUB_ORG: "jejernig"
+  DATABASE_PROVIDER: "supabase"
+  NODE_VERSION: "20.x"
+  DOTNET_VERSION: "9.0.x"
+  
+# Quality gates configuration
+quality_gates:
+  enabled: true
+  security_scanning: true
+  accessibility_testing: true
+  performance_testing: true
+  code_coverage_threshold: 80
+  build_timeout_minutes: 30
